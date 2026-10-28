@@ -8,7 +8,10 @@
     busy: 'Esse computador já está em uma sessão.',
     badcode: 'Código de confirmação incorreto.',
     locked: 'Muitas tentativas erradas. Peça o código novo e tente em 30 segundos.',
+    rejected: 'A outra pessoa recusou o pedido.',
   };
+  const CONNECT_TIMEOUT_MS = 20_000;
+  const IDLE_TITLE = document.title;
 
   const form = $('connect-form');
   const peerId = $('peer-id');
@@ -19,13 +22,11 @@
   const remote = $('remote');
   const pointToggle = $('point-toggle');
 
-  let config = null;
-  let signaling = null;
-  let pendingId = null;
-  let session = null; // { id, peer, channel, access }
+  // One attempt owns its broker peer from "Conectar" until the session ends; finish() destroys it.
+  let attempt = null; // { id, peer, conn, channel, call, accepted, access }
   let pointing = true;
 
-  const panel = RD.createPanel(() => session?.channel ?? null);
+  const panel = RD.createPanel(() => (attempt?.accepted ? attempt.channel : null));
 
   // ---------- lobby ----------
   function lobbyStatus(text, isError = false) {
@@ -39,19 +40,6 @@
     cancelBtn.hidden = !busy;
   }
 
-  function closeSignaling() {
-    signaling?.close();
-    signaling = null;
-  }
-
-  function failLobby(text, isError = true) {
-    closeSignaling();
-    setBusy(false);
-    peerCode.value = '';
-    lobbyStatus(text, isError);
-    peerCode.focus();
-  }
-
   peerId.addEventListener('input', () => {
     peerId.value = RD.formatId(peerId.value.replace(/\D/g, '').slice(0, 9));
   });
@@ -59,123 +47,122 @@
     peerCode.value = peerCode.value.replace(/\D/g, '').slice(0, 6);
   });
 
-  form.addEventListener('submit', async e => {
+  form.addEventListener('submit', e => {
     e.preventDefault();
-    if (signaling || session) return;
+    if (attempt) return;
     const id = peerId.value.replace(/\D/g, '');
     const code = peerCode.value;
     const name = myName.value.trim();
     if (id.length !== 9) return lobbyStatus('O ID tem 9 dígitos.', true);
     if (code.length !== 6) return lobbyStatus('O código de confirmação tem 6 dígitos.', true);
+    if (typeof Peer !== 'function') return lobbyStatus('Não foi possível carregar o app. Recarregue a página.', true);
     try {
       localStorage.setItem('rd.name', name);
     } catch {}
-
     setBusy(true);
-    lobbyStatus('Conectando ao servidor…');
-    try {
-      config ??= await RD.loadConfig();
-    } catch {
-      return failLobby('Servidor indisponível.');
-    }
-    pendingId = id;
-    signaling = RD.openSignaling(onSignal, () => {
-      signaling = null;
-      // Once the session is up, media flows peer-to-peer and survives losing the server.
-      if (!session) failLobby('Sem conexão com o servidor.');
-    });
-    try {
-      await signaling.ready;
-    } catch {
-      return;
-    }
-    signaling.send({ type: 'connect', id, code, name });
-    lobbyStatus('Aguardando a outra pessoa aceitar…');
+    lobbyStatus('Conectando…');
+    connect(id, code, name);
   });
 
-  cancelBtn.addEventListener('click', () => failLobby('Pedido cancelado.', false));
+  cancelBtn.addEventListener('click', () => finish('Pedido cancelado.'));
 
-  async function onSignal(msg) {
-    switch (msg.type) {
-      case 'error':
-        failLobby(ERRORS[msg.reason] ?? 'Não foi possível conectar.');
-        break;
-      case 'rejected':
-        failLobby('A outra pessoa recusou o pedido.');
+  function connect(id, code, name) {
+    const a = { id, peer: new Peer({ debug: 0 }), conn: null, channel: null, call: null, accepted: false, access: 'view' };
+    attempt = a;
+    const hostPeer = RD.peerIdFor(id);
+
+    a.peer.on('open', () => {
+      if (attempt !== a) return;
+      a.conn = a.peer.connect(hostPeer, { metadata: { name, code }, serialization: 'raw', reliable: true });
+      a.conn.on('open', () => {
+        if (attempt !== a) return;
+        a.channel = RD.createChannel(a.conn.dataChannel, {
+          onClose: () => attempt === a && finish(a.accepted ? 'A outra pessoa encerrou a sessão.' : 'A conexão foi encerrada.', !a.accepted),
+          onMessage: msg => attempt === a && onPeerMessage(a, msg),
+          onTransfer: ev => panel.transfer(ev),
+        });
+        lobbyStatus('Aguardando a outra pessoa aceitar…');
+      });
+    });
+
+    // The screen arrives as a media call from the computer we asked; anything else is refused.
+    a.peer.on('call', call => {
+      if (attempt !== a || call.peer !== hostPeer || a.call) return call.close();
+      a.call = call;
+      call.answer();
+      call.on('stream', stream => {
+        remote.srcObject = stream;
+      });
+      call.on('close', () => attempt === a && finish('A outra pessoa encerrou a sessão.'));
+      call.peerConnection?.addEventListener('connectionstatechange', () => {
+        if (attempt !== a) return;
+        const state = call.peerConnection.connectionState;
+        if (state === 'connected') $('session-title').textContent = `Conectado a ${RD.formatId(a.id)}`;
+        else if (state === 'disconnected') $('session-title').textContent = 'Conexão instável…';
+        else if (state === 'failed') finish('A conexão falhou. Verifique a internet dos dois lados.', true);
+      });
+    });
+
+    a.peer.on('error', err => {
+      if (attempt !== a) return;
+      if (err.type === 'peer-unavailable') finish(ERRORS.offline, true);
+      else if (!a.accepted) finish('Sem conexão com o serviço de conexão. Tente de novo.', true);
+    });
+
+    setTimeout(() => {
+      if (attempt === a && !a.channel) finish('O outro computador não respondeu.', true);
+    }, CONNECT_TIMEOUT_MS);
+  }
+
+  function onPeerMessage(a, msg) {
+    switch (msg.t) {
+      case 'denied':
+        finish(ERRORS[msg.reason] ?? 'Não foi possível conectar.', true);
         break;
       case 'accepted':
-        startSession();
+        if (!a.accepted) showSession(a);
         break;
-      case 'signal':
-        if (session) await session.peer.handleSignal(msg.data);
+      case 'access':
+        if (ACCESS_LABEL[msg.level]) setAccess(msg.level);
         break;
-      case 'hangup':
-        endSession('A outra pessoa encerrou a sessão.', false);
+      case 'chat':
+        if (a.accepted && typeof msg.text === 'string') panel.chat('Outro computador', msg.text);
         break;
     }
   }
 
   // ---------- session ----------
-  function startSession() {
-    const s = { id: pendingId, peer: null, channel: null, access: 'view' };
-    s.peer = RD.createPeer(config.iceServers, signaling, state => {
-      if (session !== s) return;
-      if (state === 'connected') $('session-title').textContent = `Conectado a ${RD.formatId(s.id)}`;
-      else if (state === 'disconnected') $('session-title').textContent = 'Conexão instável…';
-      else if (state === 'failed') endSession('A conexão falhou. Em redes muito restritas pode ser preciso um servidor TURN.');
-    });
-    s.peer.pc.ontrack = e => {
-      remote.srcObject = e.streams[0] ?? new MediaStream([e.track]);
-    };
-    s.peer.pc.ondatachannel = e => {
-      if (session !== s) return;
-      s.channel = RD.createChannel(e.channel, {
-        onOpen: () => session === s && panel.setEnabled(true),
-        onClose: () => session === s && endSession('A sessão foi encerrada.', false),
-        onMessage: msg => session === s && onPeerMessage(msg),
-        onTransfer: ev => panel.transfer(ev),
-      });
-    };
-    session = s;
-
+  function showSession(a) {
+    a.accepted = true;
     $('lobby').hidden = true;
     $('session').hidden = false;
     $('session-title').textContent = 'Conectando…';
     $('stage-msg').hidden = false;
     $('resolution').textContent = '';
-    setAccess('view');
-    document.title = `● ${RD.formatId(s.id)} · RemoteDesk`;
+    setAccess(a.access);
+    panel.setEnabled(true);
+    document.title = `● ${RD.formatId(a.id)} · RemoteDesk`;
   }
 
-  function endSession(reason, notify = true) {
-    const s = session;
-    if (!s) return;
-    session = null;
-    if (notify) signaling?.send({ type: 'hangup' });
-    closeSignaling();
-    s.peer.pc.close();
+  function finish(reason, isError = false) {
+    const a = attempt;
+    if (!a) return;
+    attempt = null;
+    a.peer.destroy();
     remote.srcObject = null;
     panel.setEnabled(false);
     if (document.fullscreenElement) document.exitFullscreen().catch(() => {});
     $('session').hidden = true;
     $('lobby').hidden = false;
-    document.title = 'Acessar computador · RemoteDesk';
-    failLobby(reason, false);
-  }
-
-  function onPeerMessage(msg) {
-    switch (msg.t) {
-      case 'access':
-        if (ACCESS_LABEL[msg.level]) setAccess(msg.level);
-        break;
-      case 'chat':
-        if (typeof msg.text === 'string') panel.chat('Outro computador', msg.text);
-        break;
-    }
+    document.title = IDLE_TITLE;
+    setBusy(false);
+    peerCode.value = '';
+    lobbyStatus(reason, isError);
+    peerCode.focus();
   }
 
   function setAccess(level) {
-    session.access = level;
+    attempt.access = level;
     const badge = $('access-badge');
     badge.textContent = ACCESS_LABEL[level];
     badge.dataset.level = level;
@@ -198,13 +185,13 @@
   let ptrVisible = false;
 
   function canPoint() {
-    return Boolean(session?.channel && session.access === 'point' && pointing);
+    return Boolean(attempt?.accepted && attempt.access === 'point' && pointing);
   }
 
   function updatePointing() {
     const on = canPoint();
     stage.classList.toggle('pointing', on);
-    pointToggle.setAttribute('aria-pressed', String(pointing && session?.access === 'point'));
+    pointToggle.setAttribute('aria-pressed', String(pointing && attempt?.access === 'point'));
     if (!on) hidePointer();
   }
 
@@ -219,7 +206,7 @@
   function hidePointer() {
     if (!ptrVisible) return;
     ptrVisible = false;
-    session?.channel?.send({ t: 'ptr', x: null, y: null });
+    attempt?.channel?.send({ t: 'ptr', x: null, y: null });
   }
 
   stage.addEventListener('pointermove', e => {
@@ -231,13 +218,13 @@
       ptrFrame = 0;
       if (!pendingPtr) return hidePointer();
       ptrVisible = true;
-      session?.channel?.send({ t: 'ptr', ...pendingPtr });
+      attempt?.channel?.send({ t: 'ptr', ...pendingPtr });
     });
   });
   stage.addEventListener('pointerleave', hidePointer);
   stage.addEventListener('click', e => {
     const p = canPoint() && normalize(e);
-    if (p) session.channel.send({ t: 'ping', ...p });
+    if (p) attempt.channel.send({ t: 'ping', ...p });
   });
 
   pointToggle.addEventListener('click', () => {
@@ -258,7 +245,7 @@
     panelEl.hidden = !panelEl.hidden;
     $('panel-toggle').setAttribute('aria-pressed', String(!panelEl.hidden));
   });
-  $('hangup').addEventListener('click', () => endSession('Você encerrou a sessão.'));
+  $('hangup').addEventListener('click', () => finish('Você encerrou a sessão.'));
 
   // ---------- start ----------
   try {

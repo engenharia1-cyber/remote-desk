@@ -1,6 +1,7 @@
-// Main screen. It registers this computer as soon as it opens (ID + confirmation code) and owns
-// consent for it: approves every request, picks what to capture, and is the authority on the
-// access level. Connecting to another computer opens view.html in a new tab so this ID stays up.
+// Main screen. It registers this computer with the broker as soon as it opens (ID + confirmation
+// code) and owns consent for it: checks the code, approves every request, picks what to capture,
+// and is the authority on the access level. Connecting to another computer opens view.html in a
+// new tab so this ID stays reachable.
 (() => {
   const $ = id => document.getElementById(id);
   const ACCESS_LABEL = { view: 'Somente ver', point: 'Ver + apontar' };
@@ -8,6 +9,8 @@
     view: 'A outra pessoa só vê a tela.',
     point: 'A outra pessoa vê a tela e pode apontar para mostrar onde clicar.',
   };
+  const MAX_CODE_FAILURES = 5;
+  const LOCKOUT_MS = 30_000;
   const IDLE_TITLE = document.title;
 
   const conn = $('conn');
@@ -17,23 +20,31 @@
   const previewWrap = $('preview-wrap');
   const pointer = $('pointer');
 
-  let config = null;
-  let signaling = null;
+  let peer = null;
   let hostId = null;
-  let request = null; // { from, name, cancelled } while the owner decides or picks a screen
-  let session = null; // { name, stream, peer, channel }
-  let access = readAccess();
+  let code = null;
+  let failures = 0;
+  let lockedUntil = 0;
+  let request = null; // { conn, name, cancelled } while the owner decides or picks a screen
+  let session = null; // { name, conn, call, stream, channel }
+  let access = readStored('rd.access', v => ACCESS_LABEL[v]) ?? 'point';
   let toastTimer = 0;
 
   const panel = RD.createPanel(() => session?.channel ?? null);
 
-  function readAccess() {
+  function readStored(key, valid) {
     try {
-      const saved = localStorage.getItem('rd.access');
-      return ACCESS_LABEL[saved] ? saved : 'point';
+      const value = localStorage.getItem(key);
+      return value !== null && valid(value) ? value : null;
     } catch {
-      return 'point';
+      return null;
     }
+  }
+
+  function store(key, value) {
+    try {
+      localStorage.setItem(key, value);
+    } catch {}
   }
 
   function toast(text) {
@@ -52,7 +63,6 @@
   function setIdentity(id) {
     hostId = id;
     $('host-id').textContent = id ? RD.formatId(id) : '··· ··· ···';
-    if (!id) $('host-code').textContent = '······';
     for (const btn of ['copy-id', 'copy-link', 'new-code']) $(btn).disabled = !id;
   }
 
@@ -61,53 +71,85 @@
     $('access-hint').textContent = ACCESS_HINT[access];
   }
 
-  // ---------- signaling ----------
-  function connect() {
-    setConn('connecting', 'Conectando…');
-    signaling = RD.openSignaling(onSignal, () => {
-      signaling = null;
-      setConn('offline', 'Sem conexão. Tentando de novo…');
-      setIdentity(null);
-      dismissRequest();
-      setTimeout(connect, 3000);
-    });
-    signaling.ready.then(() => signaling?.send({ type: 'register' }), () => {});
+  // The confirmation code is single-use: it changes once a request is admitted and after
+  // repeated failures.
+  function rotateCode(reason) {
+    code = RD.randomDigits(6);
+    failures = 0;
+    $('host-code').textContent = code;
+    $('code-warning').hidden = reason !== 'failures';
+    $('code-warning').textContent = 'Várias tentativas com código errado. Um código novo foi gerado e novas tentativas ficam bloqueadas por 30 segundos.';
   }
 
-  async function onSignal(msg) {
-    switch (msg.type) {
-      case 'registered':
-        setConn('online', 'Online');
-        setIdentity(msg.id);
-        break;
-      case 'code':
-        $('host-code').textContent = msg.code;
-        $('code-warning').hidden = msg.reason !== 'failures';
-        $('code-warning').textContent = 'Várias tentativas com código errado. Um código novo foi gerado e novas tentativas ficam bloqueadas por 30 segundos.';
-        break;
-      case 'request':
-        if (session || request) signaling.send({ type: 'reject', to: msg.from });
-        else showRequest(msg);
-        break;
-      case 'cancelled':
-        if (request?.from === msg.from) {
-          dismissRequest();
-          toast('O pedido de acesso foi cancelado.');
+  // ---------- broker ----------
+  function newHostId() {
+    return String(1 + (crypto.getRandomValues(new Uint32Array(1))[0] % 9)) + RD.randomDigits(8);
+  }
+
+  // The ID survives reloads. If it is still held (a reload racing the old registration, or this
+  // site open in another tab), retry once, then fall back to a fresh ID for this tab only.
+  function startPeer(id, retried = false) {
+    setConn('connecting', 'Conectando…');
+    const p = new Peer(RD.peerIdFor(id), { debug: 0 });
+    peer = p;
+    p.on('open', () => {
+      if (!readStored('rd.hostId', v => /^\d{9}$/.test(v))) store('rd.hostId', id);
+      setConn('online', 'Online');
+      setIdentity(id);
+    });
+    p.on('connection', onIncoming);
+    p.on('disconnected', () => {
+      if (p.destroyed) return;
+      // Sessions already running are peer-to-peer and keep going; only new requests wait.
+      setConn('offline', 'Sem conexão. Tentando de novo…');
+      setTimeout(() => {
+        if (!p.destroyed && p.disconnected) p.reconnect();
+      }, 3000);
+    });
+    p.on('error', err => {
+      if (err.type === 'unavailable-id') {
+        p.destroy();
+        if (!retried) setTimeout(() => startPeer(id, true), 3000);
+        else startPeer(newHostId(), true);
+      } else if (err.type !== 'peer-unavailable') {
+        setConn('offline', 'Sem conexão. Tentando de novo…');
+      }
+    });
+  }
+
+  function onIncoming(dataConn) {
+    const name = String(dataConn.metadata?.name ?? '').trim().slice(0, 64) || 'Visitante';
+    const given = String(dataConn.metadata?.code ?? '');
+    dataConn.on('open', () => {
+      const deny = reason => {
+        dataConn.send(JSON.stringify({ t: 'denied', reason }));
+        setTimeout(() => dataConn.close(), 500);
+      };
+      if (session || request) return deny('busy');
+      if (Date.now() < lockedUntil) return deny('locked');
+      if (given !== code) {
+        if (++failures >= MAX_CODE_FAILURES) {
+          lockedUntil = Date.now() + LOCKOUT_MS;
+          rotateCode('failures');
         }
-        break;
-      case 'signal':
-        if (session) await session.peer.handleSignal(msg.data);
-        break;
-      case 'hangup':
-        endSession('A outra pessoa saiu da sessão.', false);
-        break;
-    }
+        return deny('badcode');
+      }
+      rotateCode('used');
+      showRequest(dataConn, name);
+    });
   }
 
   // ---------- consent ----------
-  function showRequest(msg) {
-    request = { from: msg.from, name: msg.name, cancelled: false };
-    $('req-name').textContent = msg.name;
+  function showRequest(dataConn, name) {
+    const req = { conn: dataConn, name, cancelled: false };
+    request = req;
+    dataConn.on('close', () => {
+      if (request === req) {
+        dismissRequest();
+        toast('O pedido de acesso foi cancelado.');
+      }
+    });
+    $('req-name').textContent = name;
     $('req-access').textContent = ACCESS_LABEL[access];
     dialog.showModal();
     document.title = 'Pedido de acesso · RemoteDesk';
@@ -121,11 +163,16 @@
     if (!session) document.title = IDLE_TITLE;
   }
 
+  function refuse(req) {
+    req.conn.send(JSON.stringify({ t: 'denied', reason: 'rejected' }));
+    setTimeout(() => req.conn.close(), 500);
+  }
+
   function rejectRequest() {
     const req = request;
     if (!req) return;
     dismissRequest();
-    signaling?.send({ type: 'reject', to: req.from });
+    refuse(req);
   }
 
   async function acceptRequest() {
@@ -139,7 +186,7 @@
     } catch {
       if (!req.cancelled) {
         dismissRequest();
-        signaling?.send({ type: 'reject', to: req.from });
+        refuse(req);
         toast('Nenhuma tela foi escolhida, então o pedido foi recusado.');
       }
       return;
@@ -149,59 +196,59 @@
       return;
     }
     request = null;
-    signaling.send({ type: 'accept', to: req.from });
-    startSession(req.name, stream);
+    startSession(req, stream);
   }
 
   // ---------- session ----------
-  function startSession(name, stream) {
+  function startSession(req, stream) {
     const [track] = stream.getVideoTracks();
     if ('contentHint' in track) track.contentHint = 'detail';
 
-    const s = { name, stream, peer: null, channel: null };
-    s.peer = RD.createPeer(config.iceServers, signaling, state => {
-      if (session !== s) return;
-      if (state === 'connected') setLive(`Compartilhando com ${name}`);
-      else if (state === 'disconnected') setLive(`Conexão instável com ${name}…`);
-      else if (state === 'failed') endSession('A conexão com a outra pessoa falhou.');
-    });
-    s.peer.pc.addTrack(track, stream);
-    s.channel = RD.createChannel(s.peer.pc.createDataChannel('remotedesk'), {
-      onOpen: () => {
-        if (session !== s) return;
-        s.channel.send({ t: 'access', level: access });
-        panel.setEnabled(true);
-      },
-      onClose: () => session === s && endSession('A sessão foi encerrada.', false),
+    const s = { name: req.name, conn: req.conn, stream, call: null, channel: null };
+    s.channel = RD.createChannel(req.conn.dataChannel, {
+      onClose: () => session === s && endSession('A sessão foi encerrada.'),
       onMessage: msg => session === s && onPeerMessage(msg),
       onTransfer: ev => panel.transfer(ev),
     });
-    track.onended = () => endSession('Você parou de compartilhar a tela.');
     session = s;
+    s.channel.send({ t: 'accepted' });
+    s.channel.send({ t: 'access', level: access });
+    panel.setEnabled(true);
+
+    s.call = peer.call(req.conn.peer, stream);
+    s.call.on('close', () => session === s && endSession('A sessão foi encerrada.'));
+    s.call.on('error', () => session === s && endSession('A conexão com a outra pessoa falhou.'));
+    s.call.peerConnection?.addEventListener('connectionstatechange', () => {
+      if (session !== s) return;
+      const state = s.call.peerConnection.connectionState;
+      if (state === 'connected') setLive(`Compartilhando com ${s.name}`);
+      else if (state === 'disconnected') setLive(`Conexão instável com ${s.name}…`);
+      else if (state === 'failed') endSession('A conexão com a outra pessoa falhou.');
+    });
+    track.onended = () => endSession('Você parou de compartilhar a tela.');
 
     preview.srcObject = stream;
     $('idle').hidden = true;
     $('live').hidden = false;
-    $('pointer-label').textContent = name;
-    setLive(`Conectando com ${name}…`);
+    $('pointer-label').textContent = s.name;
+    setLive(`Conectando com ${s.name}…`);
     document.title = '● Compartilhando · RemoteDesk';
-    s.peer.offer().catch(() => endSession('Não foi possível iniciar a conexão.'));
   }
 
   function setLive(text) {
     $('live-text').textContent = text;
   }
 
-  function endSession(reason, notify = true) {
+  function endSession(reason) {
     const s = session;
     if (!s) return;
     session = null;
-    if (notify) signaling?.send({ type: 'hangup' });
     for (const track of s.stream.getTracks()) {
       track.onended = null;
       track.stop();
     }
-    s.peer.pc.close();
+    s.call?.close();
+    s.conn.close();
     preview.srcObject = null;
     pointer.hidden = true;
     $('live').hidden = true;
@@ -257,9 +304,7 @@
   accessSelect.addEventListener('change', () => {
     if (!ACCESS_LABEL[accessSelect.value]) return;
     access = accessSelect.value;
-    try {
-      localStorage.setItem('rd.access', access);
-    } catch {}
+    store('rd.access', access);
     renderAccess();
     if (access !== 'point') pointer.hidden = true;
     if (session) {
@@ -275,9 +320,11 @@
     rejectRequest();
   });
   $('stop').addEventListener('click', () => endSession('Sessão encerrada.'));
-  $('new-code').addEventListener('click', () => signaling?.send({ type: 'newcode' }));
+  $('new-code').addEventListener('click', () => {
+    if (!request) rotateCode('manual');
+  });
   $('copy-id').addEventListener('click', () => copy(hostId, 'ID copiado.'));
-  $('copy-link').addEventListener('click', () => copy(`${location.origin}/view.html?id=${hostId}`, 'Link copiado. O código você passa separado.'));
+  $('copy-link').addEventListener('click', () => copy(new URL(`view.html?id=${hostId}`, location.href).href, 'Link copiado. O código você passa separado.'));
 
   const remoteId = $('remote-id');
   const remoteCode = $('remote-code');
@@ -290,15 +337,15 @@
   $('remote-form').addEventListener('submit', e => {
     e.preventDefault();
     const id = remoteId.value.replace(/\D/g, '');
-    const code = remoteCode.value;
+    const remote = remoteCode.value;
     const error = $('remote-error');
     if (id.length !== 9) error.textContent = 'O ID tem 9 dígitos.';
     else if (id === hostId) error.textContent = 'Esse é o ID deste computador.';
-    else if (code.length !== 6) error.textContent = 'O código tem 6 dígitos.';
+    else if (remote.length !== 6) error.textContent = 'O código tem 6 dígitos.';
     else {
-      // The fragment never reaches the server; view.js reads it and clears it from the address bar.
+      // The fragment never leaves the browser; view.js reads it and clears it from the address bar.
       error.textContent = '';
-      window.open(`/view.html#id=${id}&code=${code}`, '_blank');
+      window.open(`view.html#id=${id}&code=${remote}`, '_blank');
       remoteCode.value = '';
     }
   });
@@ -314,20 +361,15 @@
 
   // ---------- start ----------
   renderAccess();
-  (async () => {
-    if (!navigator.mediaDevices?.getDisplayMedia) {
-      setConn('offline', 'Indisponível');
-      $('idle').querySelector('p').textContent = window.isSecureContext
-        ? 'Este navegador não permite compartilhar a tela. Use Chrome, Edge ou Firefox no computador.'
-        : 'Para compartilhar a tela, abra este site por HTTPS (ou pelo próprio computador em localhost).';
-      return;
-    }
-    try {
-      config = await RD.loadConfig();
-    } catch {
-      setConn('offline', 'Servidor indisponível');
-      return;
-    }
-    connect();
-  })();
+  rotateCode('new');
+  if (!navigator.mediaDevices?.getDisplayMedia) {
+    setConn('offline', 'Indisponível');
+    $('idle').querySelector('p').textContent = window.isSecureContext
+      ? 'Este navegador não permite compartilhar a tela. Use Chrome, Edge ou Firefox no computador.'
+      : 'Para compartilhar a tela, abra este site por HTTPS.';
+  } else if (typeof Peer !== 'function') {
+    setConn('offline', 'Falha ao carregar');
+  } else {
+    startPeer(readStored('rd.hostId', v => /^\d{9}$/.test(v)) ?? newHostId());
+  }
 })();

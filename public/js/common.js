@@ -1,88 +1,38 @@
-// Shared by share.html (the computer being shown) and view.html (the remote viewer):
-// signaling, the WebRTC peer, the data channel protocol and small UI helpers.
+// Shared by index.html (this computer) and view.html (the remote viewer): the data channel
+// protocol, broker peer ids and small UI helpers. Signaling goes through the public PeerJS
+// broker, so the site is fully static; screen, chat and files go peer-to-peer over WebRTC.
 window.RD = (() => {
   const CHUNK = 16 * 1024;
   const HIGH_WATER = 4 * 1024 * 1024;
   const MAX_FILE = 512 * 1024 * 1024;
+  const PEER_PREFIX = 'remotedesk-';
 
-  async function loadConfig() {
-    const res = await fetch('/config', { cache: 'no-store' });
-    if (!res.ok) throw new Error('config');
-    return res.json();
+  // Broker id for a 9-digit RemoteDesk ID; the prefix keeps us out of other apps' id space.
+  function peerIdFor(id) {
+    return PEER_PREFIX + id;
   }
 
-  // Messages are handled strictly in arrival order, so ICE candidates never overtake their SDP.
-  function openSignaling(onMessage, onClose) {
-    const ws = new WebSocket(`${location.protocol === 'https:' ? 'wss' : 'ws'}://${location.host}`);
-    let chain = Promise.resolve();
-    ws.onmessage = e => {
-      let msg;
-      try {
-        msg = JSON.parse(e.data);
-      } catch {
-        return;
-      }
-      chain = chain.then(() => onMessage(msg)).catch(err => console.error(err));
-    };
-    ws.onclose = () => onClose();
-    const ready = new Promise((resolve, reject) => {
-      ws.onopen = resolve;
-      ws.onerror = reject;
-    });
-    return {
-      ready,
-      send: msg => ws.readyState === WebSocket.OPEN && ws.send(JSON.stringify(msg)),
-      close: () => {
-        ws.onclose = null;
-        ws.close();
-      },
-    };
-  }
-
-  function createPeer(iceServers, signaling, onState) {
-    const pc = new RTCPeerConnection({ iceServers });
-    pc.onicecandidate = e => {
-      if (e.candidate) signaling.send({ type: 'signal', data: { candidate: e.candidate } });
-    };
-    pc.onconnectionstatechange = () => onState(pc.connectionState);
-
-    async function handleSignal(data) {
-      if (!data) return;
-      if (data.sdp) {
-        await pc.setRemoteDescription(data.sdp);
-        if (data.sdp.type === 'offer') {
-          await pc.setLocalDescription(await pc.createAnswer());
-          signaling.send({ type: 'signal', data: { sdp: pc.localDescription } });
-        }
-      } else if (data.candidate) {
-        await pc.addIceCandidate(data.candidate);
-      }
-    }
-
-    async function offer() {
-      await pc.setLocalDescription(await pc.createOffer());
-      signaling.send({ type: 'signal', data: { sdp: pc.localDescription } });
-    }
-
-    return { pc, handleSignal, offer };
+  function randomDigits(count) {
+    const values = crypto.getRandomValues(new Uint32Array(count));
+    return Array.from(values, v => v % 10).join('');
   }
 
   // Data channel protocol: JSON text messages ({t: ...}) plus binary chunks belonging to the
-  // file announced by the latest 'file-start'. The channel is ordered and reliable.
-  function createChannel(dc, { onOpen, onClose, onMessage, onTransfer }) {
+  // file announced by the latest 'file-start'. The channel is ordered and reliable. Listeners
+  // are added (not assigned) because PeerJS keeps its own handlers on the same channel.
+  function createChannel(dc, { onClose, onMessage, onTransfer }) {
     dc.binaryType = 'arraybuffer';
     dc.bufferedAmountLowThreshold = 1024 * 1024;
     let incoming = null;
     let sendQueue = Promise.resolve();
 
-    dc.onopen = () => onOpen?.();
-    dc.onclose = () => {
+    dc.addEventListener('close', () => {
       if (incoming) onTransfer({ ...incoming.meta, dir: 'in', status: 'failed' });
       incoming = null;
       onClose?.();
-    };
+    });
 
-    dc.onmessage = e => {
+    dc.addEventListener('message', e => {
       if (typeof e.data !== 'string') {
         if (!incoming) return;
         incoming.chunks.push(e.data);
@@ -117,7 +67,7 @@ window.RD = (() => {
       } else {
         onMessage(msg);
       }
-    };
+    });
 
     function waitDrain() {
       if (dc.bufferedAmount <= HIGH_WATER) return Promise.resolve();
@@ -296,5 +246,5 @@ window.RD = (() => {
     };
   }
 
-  return { loadConfig, openSignaling, createPeer, createChannel, createPanel, videoContentRect, formatId, formatBytes };
+  return { peerIdFor, randomDigits, createChannel, createPanel, videoContentRect, formatId, formatBytes };
 })();

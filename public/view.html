@@ -33,6 +33,7 @@
         <span class="field-label">Seu nome</span>
         <input id="my-name" maxlength="64" placeholder="Como o outro lado vai te ver">
       </label>
+      <label class="check"><input id="open-maximized" type="checkbox" checked> Abrir tela remota maximizada</label>
       <button id="connect-btn" class="btn primary block" type="submit">Conectar</button>
       <p id="lobby-status" class="status-line" role="status"></p>
       <button id="cancel-btn" class="btn ghost block" type="button" hidden>Cancelar pedido</button>
@@ -49,6 +50,7 @@
       </div>
       <div class="toolbar-right">
         <button id="point-toggle" class="btn ghost small" type="button" aria-pressed="true">Apontar</button>
+        <button id="maximize" class="btn ghost small" type="button" aria-pressed="false">Maximizar</button>
         <button id="fullscreen" class="btn ghost small" type="button">Tela cheia</button>
         <button id="panel-toggle" class="btn ghost small" type="button" aria-pressed="true">Chat e arquivos</button>
         <button id="hangup" class="btn danger small" type="button">Encerrar</button>

@@ -136,6 +136,21 @@ window.RD = (() => {
     return { left: box.left + (box.width - width) / 2, top: box.top + (box.height - height) / 2, width, height };
   }
 
+  // "Open the remote screen maximized" is set on either page and read by view.html.
+  function getMaximizedPref() {
+    try {
+      return localStorage.getItem('rd.maximized') !== '0';
+    } catch {
+      return true;
+    }
+  }
+
+  function setMaximizedPref(on) {
+    try {
+      localStorage.setItem('rd.maximized', on ? '1' : '0');
+    } catch {}
+  }
+
   function formatId(id) {
     return String(id).replace(/(\d{3})(?=\d)/g, '$1 ');
   }
@@ -255,5 +270,5 @@ window.RD = (() => {
     };
   }
 
-  return { framed, peerIdFor, randomDigits, createChannel, createPanel, videoContentRect, formatId, formatBytes };
+  return { framed, peerIdFor, randomDigits, createChannel, createPanel, videoContentRect, getMaximizedPref, setMaximizedPref, formatId, formatBytes };
 })();

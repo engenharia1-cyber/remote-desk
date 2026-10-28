@@ -22,6 +22,7 @@
   const stage = $('stage');
   const remote = $('remote');
   const pointToggle = $('point-toggle');
+  const openMaximized = $('open-maximized');
 
   // One attempt owns its broker peer from "Conectar" until the session ends; finish() destroys it.
   let attempt = null; // { id, peer, conn, channel, call, accepted, access }
@@ -81,7 +82,11 @@
         a.channel = RD.createChannel(a.conn.dataChannel, {
           onClose: () => attempt === a && finish(a.accepted ? 'A outra pessoa encerrou a sessão.' : 'A conexão foi encerrada.', !a.accepted),
           onMessage: msg => attempt === a && onPeerMessage(a, msg),
-          onTransfer: ev => a.accepted && panel.transfer(ev),
+          onTransfer: ev => {
+            if (!a.accepted) return;
+            panel.transfer(ev);
+            if (ev.dir === 'in' && ev.status === 'done') markUnread();
+          },
         });
         a.channel.send({ t: 'auth', code, name });
         lobbyStatus('Aguardando a outra pessoa aceitar…');
@@ -129,7 +134,10 @@
         if (ACCESS_LABEL[msg.level]) setAccess(msg.level);
         break;
       case 'chat':
-        if (a.accepted && typeof msg.text === 'string') panel.chat('Outro computador', msg.text);
+        if (a.accepted && typeof msg.text === 'string') {
+          panel.chat('Outro computador', msg.text);
+          markUnread();
+        }
         break;
     }
   }
@@ -144,6 +152,7 @@
     $('resolution').textContent = '';
     setAccess(a.access);
     panel.setEnabled(true);
+    setMaximized(openMaximized.checked);
     document.title = `● ${RD.formatId(a.id)} · RemoteDesk`;
   }
 
@@ -155,6 +164,7 @@
     remote.srcObject = null;
     panel.setEnabled(false);
     if (document.fullscreenElement) document.exitFullscreen().catch(() => {});
+    setMaximized(false);
     $('session').hidden = true;
     $('lobby').hidden = false;
     document.title = IDLE_TITLE;
@@ -243,17 +253,35 @@
   document.addEventListener('fullscreenchange', () => {
     $('fullscreen').textContent = document.fullscreenElement ? 'Sair da tela cheia' : 'Tela cheia';
   });
-  $('panel-toggle').addEventListener('click', () => {
-    const panelEl = $('panel');
-    panelEl.hidden = !panelEl.hidden;
-    $('panel-toggle').setAttribute('aria-pressed', String(!panelEl.hidden));
-  });
+  $('panel-toggle').addEventListener('click', () => setPanelVisible($('panel').hidden));
+  $('maximize').addEventListener('click', () => setMaximized(!document.body.classList.contains('maximized')));
+
+  // Maximized hides the page header and the side panel so the remote screen fills the window.
+  // True fullscreen (whole monitor) stays on its own button: browsers only allow it from a click.
+  function setMaximized(on) {
+    document.body.classList.toggle('maximized', on);
+    setPanelVisible(!on);
+    $('maximize').textContent = on ? 'Restaurar' : 'Maximizar';
+    $('maximize').setAttribute('aria-pressed', String(on));
+  }
+
+  function setPanelVisible(visible) {
+    $('panel').hidden = !visible;
+    $('panel-toggle').setAttribute('aria-pressed', String(visible));
+    if (visible) $('panel-toggle').classList.remove('has-unread');
+  }
+
+  function markUnread() {
+    if ($('panel').hidden) $('panel-toggle').classList.add('has-unread');
+  }
   $('hangup').addEventListener('click', () => finish('Você encerrou a sessão.'));
 
   // ---------- start ----------
   try {
     myName.value = localStorage.getItem('rd.name') ?? '';
   } catch {}
+  openMaximized.checked = RD.getMaximizedPref();
+  openMaximized.addEventListener('change', () => RD.setMaximizedPref(openMaximized.checked));
 
   // The main screen opens this page as view.html#id=...&code=...; a shared link carries only ?id=.
   const fromHash = new URLSearchParams(location.hash.slice(1));

@@ -393,6 +393,9 @@
   remoteCode.addEventListener('input', () => {
     remoteCode.value = remoteCode.value.replace(/\D/g, '').slice(0, 6);
   });
+  const remoteMaximized = $('remote-maximized');
+  remoteMaximized.checked = RD.getMaximizedPref();
+  remoteMaximized.addEventListener('change', () => RD.setMaximizedPref(remoteMaximized.checked));
   $('remote-form').addEventListener('submit', e => {
     e.preventDefault();
     const id = remoteId.value.replace(/\D/g, '');

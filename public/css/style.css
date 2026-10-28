@@ -134,6 +134,8 @@ input::placeholder { color: #566377; }
 .hint { color: var(--text-muted); font-size: 13.5px; margin: 10px 0 0; }
 .warning { color: var(--warn); font-size: 13.5px; margin: 10px 0 0; }
 .muted { color: var(--text-muted); }
+.check { display: flex; align-items: center; gap: 8px; margin: 0 0 14px; color: var(--text-muted); font-size: 14px; cursor: pointer; }
+.check input { width: auto; margin: 0; accent-color: var(--accent); }
 .status-line { min-height: 1.5em; margin: 14px 0 0; font-size: 14px; color: var(--text-muted); text-align: center; }
 .status-line.error { color: var(--danger); }
 
@@ -302,6 +304,10 @@ input::placeholder { color: #566377; }
 .stage.pointing video { cursor: crosshair; }
 .stage-msg { position: absolute; inset: 0; display: grid; place-items: center; color: var(--text-muted); pointer-events: none; }
 .stage:fullscreen { background: #000; }
+
+/* Maximized session: the remote screen takes the whole window, only the session toolbar stays. */
+body.maximized .topbar { display: none; }
+.btn.has-unread::after { content: ''; width: 7px; height: 7px; border-radius: 50%; background: var(--warn); }
 
 /* ---------- dialog + toast ---------- */
 .modal {

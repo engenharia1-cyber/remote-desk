@@ -1,0 +1,84 @@
+<!doctype html>
+<html lang="pt-BR">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Acessar computador · RemoteDesk</title>
+  <link rel="icon" href="/img/logo.svg" type="image/svg+xml">
+  <link rel="stylesheet" href="/css/style.css">
+</head>
+<body>
+  <header class="topbar">
+    <a class="brand" href="/">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="2" y="4" width="14" height="10" rx="2"/><path d="M6 18h6M9 14v4"/><rect x="11" y="9" width="11" height="8" rx="1.6" fill="var(--bg-raised)"/><path d="M14.5 20h4M16.5 17v3"/></svg>
+      RemoteDesk
+    </a>
+    <span class="topbar-title">Acessar computador</span>
+  </header>
+
+  <main id="lobby" class="lobby">
+    <form id="connect-form" class="card connect-card" autocomplete="off">
+      <h1>Acessar outro computador</h1>
+      <p class="hint">Peça o ID e o código de confirmação para quem vai compartilhar a tela.</p>
+      <label class="field">
+        <span class="field-label">ID</span>
+        <input id="peer-id" inputmode="numeric" placeholder="123 456 789" maxlength="11" required>
+      </label>
+      <label class="field">
+        <span class="field-label">Código de confirmação</span>
+        <input id="peer-code" inputmode="numeric" autocomplete="one-time-code" placeholder="000000" maxlength="6" required>
+      </label>
+      <label class="field">
+        <span class="field-label">Seu nome</span>
+        <input id="my-name" maxlength="64" placeholder="Como o outro lado vai te ver">
+      </label>
+      <button id="connect-btn" class="btn primary block" type="submit">Conectar</button>
+      <p id="lobby-status" class="status-line" role="status"></p>
+      <button id="cancel-btn" class="btn ghost block" type="button" hidden>Cancelar pedido</button>
+    </form>
+  </main>
+
+  <main id="session" class="session" hidden>
+    <div class="toolbar">
+      <div class="toolbar-left">
+        <span class="live-dot"></span>
+        <span id="session-title">Conectando…</span>
+        <span id="access-badge" class="badge"></span>
+        <span id="resolution" class="muted"></span>
+      </div>
+      <div class="toolbar-right">
+        <button id="point-toggle" class="btn ghost small" type="button" aria-pressed="true">Apontar</button>
+        <button id="fullscreen" class="btn ghost small" type="button">Tela cheia</button>
+        <button id="panel-toggle" class="btn ghost small" type="button" aria-pressed="true">Chat e arquivos</button>
+        <button id="hangup" class="btn danger small" type="button">Encerrar</button>
+      </div>
+    </div>
+    <div class="session-body">
+      <div id="stage" class="stage">
+        <video id="remote" autoplay muted playsinline></video>
+        <div id="stage-msg" class="stage-msg">Aguardando a tela…</div>
+      </div>
+      <aside id="panel" class="panel disabled">
+        <div class="panel-section chat">
+          <h3>Chat</h3>
+          <ul id="chat-list" class="chat-list" aria-live="polite"></ul>
+          <form id="chat-form" class="chat-form">
+            <input id="chat-input" placeholder="Mensagem…" autocomplete="off" maxlength="2000" disabled>
+            <button class="btn primary small" disabled>Enviar</button>
+          </form>
+        </div>
+        <div class="panel-section files">
+          <div class="files-head">
+            <h3>Arquivos</h3>
+            <label class="btn ghost small">Enviar arquivo<input id="file-input" type="file" multiple hidden disabled></label>
+          </div>
+          <ul id="transfer-list" class="transfer-list"><li class="empty">Arraste arquivos para cá</li></ul>
+        </div>
+      </aside>
+    </div>
+  </main>
+
+  <script src="/js/common.js"></script>
+  <script src="/js/view.js"></script>
+</body>
+</html>

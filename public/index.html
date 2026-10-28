@@ -1,0 +1,112 @@
+<!doctype html>
+<html lang="pt-BR">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>RemoteDesk</title>
+  <link rel="icon" href="/img/logo.svg" type="image/svg+xml">
+  <link rel="stylesheet" href="/css/style.css">
+</head>
+<body>
+  <header class="topbar">
+    <a class="brand" href="/">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="2" y="4" width="14" height="10" rx="2"/><path d="M6 18h6M9 14v4"/><rect x="11" y="9" width="11" height="8" rx="1.6" fill="var(--bg-raised)"/><path d="M14.5 20h4M16.5 17v3"/></svg>
+      RemoteDesk
+    </a>
+    <span class="spacer"></span>
+    <span id="conn" class="conn" data-state="connecting">Conectando…</span>
+  </header>
+
+  <main class="share">
+    <section class="share-side">
+      <div class="card">
+        <span class="field-label">Este computador · Seu ID</span>
+        <div id="host-id" class="big-id">··· ··· ···</div>
+        <div class="id-actions">
+          <button id="copy-id" class="btn ghost small" type="button" disabled>Copiar ID</button>
+          <button id="copy-link" class="btn ghost small" type="button" disabled>Copiar link</button>
+        </div>
+        <div class="divider"></div>
+        <span class="field-label">Código de confirmação</span>
+        <div class="code-row">
+          <div id="host-code" class="big-code">······</div>
+          <button id="new-code" class="icon-btn" type="button" title="Gerar novo código" aria-label="Gerar novo código" disabled>↻</button>
+        </div>
+        <p class="hint">Passe o ID e o código para quem vai acessar. Cada código vale para um único pedido.</p>
+        <p id="code-warning" class="warning" hidden></p>
+        <div class="divider"></div>
+        <label class="field-label" for="access">Nível de acesso</label>
+        <select id="access">
+          <option value="point">Ver + apontar</option>
+          <option value="view">Somente ver</option>
+        </select>
+        <p id="access-hint" class="hint"></p>
+      </div>
+
+      <form id="remote-form" class="card" autocomplete="off">
+        <span class="field-label">Acessar outro computador</span>
+        <div class="remote-fields">
+          <input id="remote-id" class="mono-input" inputmode="numeric" placeholder="ID remoto" maxlength="11" aria-label="ID remoto">
+          <input id="remote-code" class="mono-input" inputmode="numeric" placeholder="Código" maxlength="6" aria-label="Código de confirmação">
+        </div>
+        <button class="btn primary block" type="submit">Conectar</button>
+        <p id="remote-error" class="status-line error" role="status"></p>
+      </form>
+    </section>
+
+    <section class="share-main">
+      <div id="idle" class="card idle-state">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="2" y="3" width="20" height="14" rx="2"/><path d="M8 21h8M12 17v4"/><path d="M8.5 10h.01M12 10h.01M15.5 10h.01"/></svg>
+        <h2>Pronto para receber conexões</h2>
+        <p>Quando alguém pedir acesso com seu ID e código, você decide se aceita e escolhe qual tela, janela ou aba vai mostrar.</p>
+      </div>
+
+      <div id="live" class="card live" hidden>
+        <div class="live-bar">
+          <span class="live-dot"></span>
+          <span id="live-text" class="grow">Compartilhando</span>
+          <button id="stop" class="btn danger small" type="button">Encerrar</button>
+        </div>
+        <div id="preview-wrap" class="preview">
+          <video id="preview" autoplay muted playsinline></video>
+          <div id="pointer" class="remote-pointer" hidden><span id="pointer-label"></span></div>
+        </div>
+        <p class="hint">Prévia do que está sendo mostrado. O ponto colorido indica para onde a outra pessoa está apontando.</p>
+      </div>
+    </section>
+
+    <aside id="panel" class="panel disabled">
+      <div class="panel-section chat">
+        <h3>Chat</h3>
+        <ul id="chat-list" class="chat-list" aria-live="polite"></ul>
+        <form id="chat-form" class="chat-form">
+          <input id="chat-input" placeholder="Mensagem…" autocomplete="off" maxlength="2000" disabled>
+          <button class="btn primary small" disabled>Enviar</button>
+        </form>
+      </div>
+      <div class="panel-section files">
+        <div class="files-head">
+          <h3>Arquivos</h3>
+          <label class="btn ghost small">Enviar arquivo<input id="file-input" type="file" multiple hidden disabled></label>
+        </div>
+        <ul id="transfer-list" class="transfer-list"><li class="empty">Arraste arquivos para cá durante a sessão</li></ul>
+      </div>
+    </aside>
+  </main>
+
+  <dialog id="request" class="modal">
+    <h2>Pedido de acesso</h2>
+    <p><strong id="req-name"></strong> quer ver sua tela.</p>
+    <p class="hint">Nível de acesso: <strong id="req-access"></strong>. Você pode mudar no menu a qualquer momento.</p>
+    <div class="modal-actions">
+      <button id="req-reject" class="btn ghost" type="button">Recusar</button>
+      <button id="req-accept" class="btn primary" type="button">Aceitar e escolher tela</button>
+    </div>
+  </dialog>
+
+  <div id="toast" class="toast" role="status" hidden></div>
+
+  <script src="/js/common.js"></script>
+  <script src="/js/app.js"></script>
+</body>
+</html>

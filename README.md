@@ -6,7 +6,7 @@ Acesso remoto 100% no navegador: tela ao vivo, ponteiro remoto, chat e troca de 
 
 ## Como funciona
 
-- Ao abrir o app, o computador já recebe um **ID de 9 dígitos**, que se mantém entre visitas no mesmo navegador, e um **código de confirmação de 6 dígitos**.
+- Ao abrir o app, o computador já recebe um **ID de 9 dígitos** e um **código de confirmação de 6 dígitos**. O ID nunca se repete: um novo é gerado toda vez que o app abre e ao fim de cada sessão.
 - Quem vai acessar digita o ID e o código em **Acessar outro computador**. A sessão abre numa nova aba.
 - O computador acessado vê o pedido com o nome de quem pediu, aceita ou recusa, e escolhe qual tela, janela ou aba vai mostrar.
 - O código só vale **uma vez**: muda depois de cada pedido aceito ou quando você clica em ↻.
@@ -29,8 +29,8 @@ Acesso remoto 100% no navegador: tela ao vivo, ponteiro remoto, chat e troca de 
 
 Limites conhecidos, próprios de usar um serviço de conexão público:
 
-- Os IDs são de quem chegar primeiro. Se o seu computador estiver com o app fechado, outra pessoa pode ocupar o seu ID e se passar por ele. Ao acessar, confira se a tela é mesmo a esperada. Um código obtido assim não serve depois, porque o código muda toda vez que o app abre.
-- Quem souber um ID consegue descobrir se ele está online.
+- Os IDs são de quem chegar primeiro. Como o ID muda a cada abertura e a cada sessão, um ID antigo não leva mais ao seu computador. Se alguém ocupar um ID que você já descartou, quem tentar usar esse ID antigo cai nessa pessoa. Por isso, ao acessar, confira se a tela é mesmo a esperada.
+- Quem souber um ID consegue descobrir se ele está online enquanto ele estiver em uso.
 - A disponibilidade depende do serviço público do PeerJS.
 
 ## Rodando localmente

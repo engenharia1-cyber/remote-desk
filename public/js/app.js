@@ -118,14 +118,14 @@
     return String(1 + (crypto.getRandomValues(new Uint32Array(1))[0] % 9)) + RD.randomDigits(8);
   }
 
-  // The ID survives reloads. If it is still held (a reload racing the old registration, or this
-  // site open in another tab), retry once, then fall back to a fresh ID for this tab only.
-  function startPeer(id, retried = false) {
+  // IDs are never reused: a fresh one each time the app opens and after every session, so an ID
+  // that was handed out stops working once its session is over.
+  function startPeer(id) {
     setConn('connecting', 'Conectando…');
+    setIdentity(null);
     const p = new Peer(RD.peerIdFor(id), { debug: 0 });
     peer = p;
     p.on('open', () => {
-      if (!readStored('rd.hostId', v => /^\d{9}$/.test(v))) store('rd.hostId', id);
       setConn('online', 'Online');
       setIdentity(id);
     });
@@ -141,8 +141,7 @@
     p.on('error', err => {
       if (err.type === 'unavailable-id') {
         p.destroy();
-        if (!retried) setTimeout(() => startPeer(id, true), 3000);
-        else startPeer(newHostId(), true);
+        startPeer(newHostId());
       } else if (err.type !== 'peer-unavailable') {
         setConn('offline', 'Sem conexão. Tentando de novo…');
       }
@@ -314,7 +313,14 @@
     $('idle').hidden = false;
     panel.setEnabled(false);
     document.title = IDLE_TITLE;
-    if (reason) toast(reason);
+    renewIdentity();
+    toast(`${reason} Um novo ID foi gerado.`);
+  }
+
+  function renewIdentity() {
+    peer?.destroy();
+    rotateCode();
+    startPeer(newHostId());
   }
 
   function onPeerMessage(msg) {
@@ -432,6 +438,10 @@
   } else if (typeof Peer !== 'function') {
     setConn('offline', 'Falha ao carregar');
   } else {
-    startPeer(readStored('rd.hostId', v => /^\d{9}$/.test(v)) ?? newHostId());
+    // Earlier versions kept the ID across visits; drop it so it can never be reused.
+    try {
+      localStorage.removeItem('rd.hostId');
+    } catch {}
+    startPeer(newHostId());
   }
 })();

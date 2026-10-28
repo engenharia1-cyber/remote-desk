@@ -2,6 +2,12 @@
 // protocol, broker peer ids and small UI helpers. Signaling goes through the public PeerJS
 // broker, so the site is fully static; screen, chat and files go peer-to-peer over WebRTC.
 window.RD = (() => {
+  // Refuse to run inside a frame: another site could overlay the page and trick the owner into
+  // accepting a request or picking a screen. GitHub Pages cannot send frame-ancestors, so the
+  // page enforces it itself; the 'framed' class hides everything (see style.css).
+  const framed = window.top !== window.self;
+  if (framed) document.documentElement.classList.add('framed');
+
   const CHUNK = 16 * 1024;
   const HIGH_WATER = 4 * 1024 * 1024;
   const MAX_FILE = 512 * 1024 * 1024;
@@ -63,7 +69,10 @@ window.RD = (() => {
         const { meta, chunks, received } = incoming;
         incoming = null;
         if (received !== meta.size) return onTransfer({ ...meta, dir: 'in', status: 'failed' });
-        onTransfer({ ...meta, dir: 'in', status: 'done', done: received, blob: new Blob(chunks) });
+        // A generic binary type makes the browser download the file instead of rendering it
+        // (e.g. a received .html or .svg) inside this site's origin.
+        const blob = new Blob(chunks, { type: 'application/octet-stream' });
+        onTransfer({ ...meta, dir: 'in', status: 'done', done: received, blob });
       } else {
         onMessage(msg);
       }
@@ -246,5 +255,5 @@ window.RD = (() => {
     };
   }
 
-  return { peerIdFor, randomDigits, createChannel, createPanel, videoContentRect, formatId, formatBytes };
+  return { framed, peerIdFor, randomDigits, createChannel, createPanel, videoContentRect, formatId, formatBytes };
 })();

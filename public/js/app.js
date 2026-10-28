@@ -9,9 +9,18 @@
     view: 'A outra pessoa só vê a tela.',
     point: 'A outra pessoa vê a tela e pode apontar para mostrar onde clicar.',
   };
-  const MAX_CODE_FAILURES = 5;
-  const LOCKOUT_MS = 30_000;
+  // Code attempts are rate-limited (token bucket) instead of locking the computer out, so someone
+  // who only knows the ID cannot block the real visitor by guessing wrong on purpose. At the
+  // sustained rate a 6-digit code takes days to guess, and a hit still needs the owner's click.
+  const ATTEMPT_BURST = 5;
+  const ATTEMPT_REFILL_MS = 2_000;
+  const FAILURE_WARN_COUNT = 10;
+  const FAILURE_WINDOW_MS = 60_000;
+  // Visitors must authenticate soon after connecting; idle or silent connections are dropped.
+  const AUTH_TIMEOUT_MS = 10_000;
+  const MAX_PENDING_AUTH = 5;
   const IDLE_TITLE = document.title;
+  if (RD.framed) return;
 
   const conn = $('conn');
   const dialog = $('request');
@@ -23,8 +32,10 @@
   let peer = null;
   let hostId = null;
   let code = null;
-  let failures = 0;
-  let lockedUntil = 0;
+  let attemptTokens = ATTEMPT_BURST;
+  let attemptRefilledAt = Date.now();
+  let recentFailures = []; // timestamps of wrong codes inside FAILURE_WINDOW_MS
+  let pendingAuth = 0;
   let request = null; // { conn, name, cancelled } while the owner decides or picks a screen
   let session = null; // { name, conn, call, stream, channel }
   let access = readStored('rd.access', v => ACCESS_LABEL[v]) ?? 'point';
@@ -71,14 +82,35 @@
     $('access-hint').textContent = ACCESS_HINT[access];
   }
 
-  // The confirmation code is single-use: it changes once a request is admitted and after
-  // repeated failures.
-  function rotateCode(reason) {
+  // The confirmation code is single-use: it changes once a request is admitted, or when the
+  // owner asks. Wrong guesses from outside never change it, so the visitor's code stays valid.
+  function rotateCode() {
     code = RD.randomDigits(6);
-    failures = 0;
+    recentFailures = [];
     $('host-code').textContent = code;
-    $('code-warning').hidden = reason !== 'failures';
-    $('code-warning').textContent = 'Várias tentativas com código errado. Um código novo foi gerado e novas tentativas ficam bloqueadas por 30 segundos.';
+    $('code-warning').hidden = true;
+  }
+
+  function takeAttempt() {
+    const now = Date.now();
+    const earned = Math.floor((now - attemptRefilledAt) / ATTEMPT_REFILL_MS);
+    if (earned > 0) {
+      attemptTokens = Math.min(ATTEMPT_BURST, attemptTokens + earned);
+      attemptRefilledAt += earned * ATTEMPT_REFILL_MS;
+    }
+    if (attemptTokens === 0) return false;
+    if (attemptTokens === ATTEMPT_BURST) attemptRefilledAt = now;
+    attemptTokens--;
+    return true;
+  }
+
+  function noteFailure() {
+    const now = Date.now();
+    recentFailures = recentFailures.filter(t => now - t < FAILURE_WINDOW_MS);
+    recentFailures.push(now);
+    if (recentFailures.length < FAILURE_WARN_COUNT) return;
+    $('code-warning').textContent = 'Muitas tentativas com código errado no último minuto. Se não estiver esperando ninguém, gere um novo código (↻).';
+    $('code-warning').hidden = false;
   }
 
   // ---------- broker ----------
@@ -118,24 +150,51 @@
   }
 
   function onIncoming(dataConn) {
-    const name = String(dataConn.metadata?.name ?? '').trim().slice(0, 64) || 'Visitante';
-    const given = String(dataConn.metadata?.code ?? '');
+    if (pendingAuth >= MAX_PENDING_AUTH) {
+      dataConn.close();
+      return;
+    }
+    pendingAuth++;
+    let settled = false;
+    const timer = setTimeout(() => settle() && dataConn.close(), AUTH_TIMEOUT_MS);
+    function settle() {
+      if (settled) return false;
+      settled = true;
+      pendingAuth--;
+      clearTimeout(timer);
+      return true;
+    }
+    const deny = reason => {
+      dataConn.send(JSON.stringify({ t: 'denied', reason }));
+      setTimeout(() => dataConn.close(), 500);
+    };
+    dataConn.on('close', settle);
     dataConn.on('open', () => {
-      const deny = reason => {
-        dataConn.send(JSON.stringify({ t: 'denied', reason }));
-        setTimeout(() => dataConn.close(), 500);
-      };
-      if (session || request) return deny('busy');
-      if (Date.now() < lockedUntil) return deny('locked');
-      if (given !== code) {
-        if (++failures >= MAX_CODE_FAILURES) {
-          lockedUntil = Date.now() + LOCKOUT_MS;
-          rotateCode('failures');
-        }
-        return deny('badcode');
+      if (session || request) {
+        settle();
+        return deny('busy');
       }
-      rotateCode('used');
-      showRequest(dataConn, name);
+      // The code and name travel only over the encrypted peer-to-peer channel, never through the
+      // broker, so the broker operator never sees a usable ID + code pair.
+      const onAuth = e => {
+        if (typeof e.data !== 'string') return;
+        dataConn.dataChannel.removeEventListener('message', onAuth);
+        if (!settle()) return;
+        let msg = null;
+        try {
+          msg = JSON.parse(e.data);
+        } catch {}
+        if (msg?.t !== 'auth') return deny('badcode');
+        if (session || request) return deny('busy');
+        if (!takeAttempt()) return deny('slow');
+        if (String(msg.code ?? '') !== code) {
+          noteFailure();
+          return deny('badcode');
+        }
+        rotateCode();
+        showRequest(dataConn, String(msg.name ?? '').trim().slice(0, 64) || 'Visitante');
+      };
+      dataConn.dataChannel.addEventListener('message', onAuth);
     });
   }
 
@@ -321,7 +380,7 @@
   });
   $('stop').addEventListener('click', () => endSession('Sessão encerrada.'));
   $('new-code').addEventListener('click', () => {
-    if (!request) rotateCode('manual');
+    if (!request) rotateCode();
   });
   $('copy-id').addEventListener('click', () => copy(hostId, 'ID copiado.'));
   $('copy-link').addEventListener('click', () => copy(new URL(`view.html?id=${hostId}`, location.href).href, 'Link copiado. O código você passa separado.'));
@@ -361,7 +420,7 @@
 
   // ---------- start ----------
   renderAccess();
-  rotateCode('new');
+  rotateCode();
   if (!navigator.mediaDevices?.getDisplayMedia) {
     setConn('offline', 'Indisponível');
     $('idle').querySelector('p').textContent = window.isSecureContext

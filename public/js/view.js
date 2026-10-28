@@ -7,11 +7,12 @@
     offline: 'ID não encontrado ou computador offline.',
     busy: 'Esse computador já está em uma sessão.',
     badcode: 'Código de confirmação incorreto.',
-    locked: 'Muitas tentativas erradas. Peça o código novo e tente em 30 segundos.',
+    slow: 'Muitas tentativas agora. Aguarde alguns segundos e tente de novo.',
     rejected: 'A outra pessoa recusou o pedido.',
   };
   const CONNECT_TIMEOUT_MS = 20_000;
   const IDLE_TITLE = document.title;
+  if (RD.framed) return;
 
   const form = $('connect-form');
   const peerId = $('peer-id');
@@ -73,14 +74,16 @@
 
     a.peer.on('open', () => {
       if (attempt !== a) return;
-      a.conn = a.peer.connect(hostPeer, { metadata: { name, code }, serialization: 'raw', reliable: true });
+      // No metadata: the code and name go only over the encrypted channel once it opens.
+      a.conn = a.peer.connect(hostPeer, { serialization: 'raw', reliable: true });
       a.conn.on('open', () => {
         if (attempt !== a) return;
         a.channel = RD.createChannel(a.conn.dataChannel, {
           onClose: () => attempt === a && finish(a.accepted ? 'A outra pessoa encerrou a sessão.' : 'A conexão foi encerrada.', !a.accepted),
           onMessage: msg => attempt === a && onPeerMessage(a, msg),
-          onTransfer: ev => panel.transfer(ev),
+          onTransfer: ev => a.accepted && panel.transfer(ev),
         });
+        a.channel.send({ t: 'auth', code, name });
         lobbyStatus('Aguardando a outra pessoa aceitar…');
       });
     });

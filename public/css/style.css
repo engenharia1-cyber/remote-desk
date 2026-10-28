@@ -34,6 +34,17 @@ body {
 
 [hidden] { display: none !important; }
 
+/* Embedded in another site: show nothing clickable (see RD.framed in common.js). */
+html.framed body > * { display: none !important; }
+html.framed body::before {
+  content: 'Por segurança, o RemoteDesk não funciona dentro de outro site. Abra-o em uma aba própria.';
+  margin: auto;
+  padding: 24px;
+  max-width: 44ch;
+  text-align: center;
+  color: var(--text-muted);
+}
+
 a { color: var(--accent); }
 
 h1, h2, h3 { margin: 0; line-height: 1.2; }
